@@ -1,4 +1,5 @@
 /** Bundler generation and validation tests that do not require a server. */
+import { runInNewContext } from 'node:vm';
 import { randomUUID } from 'crypto';
 import test from 'ava';
 import { moduleMatches, parseWorkflowCode } from '@temporalio/worker/internal';
@@ -101,14 +102,12 @@ test('WorkerOptions.bundlerOptions.webpackConfigHook works', async (t) => {
       bundlerOptions: {
         webpackConfigHook: (config) => {
           t.is(config.mode, 'development');
-          config.mode = 'invalid' as any;
-          return config;
+          return { ...config, context: 'relative-context' };
         },
       },
     }),
     {
-      name: 'ValidationError',
-      message: /Invalid configuration object./,
+      message: /context.*must be an absolute path/,
     }
   );
 });
@@ -186,12 +185,12 @@ test('Workflow bundle redirects the module cache with a pre-bundled dependency (
   const { code } = await bundleWorkflowCode({
     workflowsPath: require.resolve('./workflows/workflow-with-prebundled-dep'),
   });
-  // The top-level runtime cache is redirected to the runtime-injected global...
-  t.true(code.includes('globalThis.__webpack_module_cache__'), 'top-level module cache should be redirected');
-  // ...while the dependency's nested, private cache is left untouched (still `= {}`), and
-  // is the only remaining bare initializer.
-  const remainingBareInitializers = code.match(/__webpack_module_cache__ = \{\}/g) ?? [];
-  t.is(remainingBareInitializers.length, 1, 'the nested private cache should be left untouched');
+  const cache = {};
+  const sandbox = { __webpack_module_cache__: cache, URL, URLSearchParams, TextEncoder, TextDecoder, AbortController };
+  const workflow = runInNewContext(code + '\n__TEMPORAL__.importWorkflows().workflowWithPrebundledDep', sandbox);
+  t.is(await workflow(), 1);
+  t.true(Object.keys(cache).length > 0, 'the outer runtime should populate the injected cache');
+  t.false('greeting' in cache, 'the nested runtime should keep its cache private');
 });
 
 // Regression test for https://github.com/temporalio/sdk-typescript/issues/2170:
@@ -209,37 +208,19 @@ test('Workflow bundle redirects the module cache when minified after webpack (#2
   t.true(code.includes('globalThis.__webpack_module_cache__'), 'module cache should be redirected before minification');
 });
 
-test('Workflow bundle redirects the module cache regardless of assignment whitespace', async (t) => {
+test('Minified Workflow bundles populate the runtime-injected cache', async (t) => {
   const { code } = await bundleWorkflowCode({
     workflowsPath: require.resolve('./workflows/preload-shared-counter'),
-    webpackConfigHook: (config) => {
-      config.plugins = [new ModuleCacheRenderWhitespaceCollapsePlugin(), ...(config.plugins ?? [])];
-      return config;
-    },
+    webpackConfigHook: (config) => ({ ...config, mode: 'production' }),
   });
-
-  t.true(code.includes('globalThis.__webpack_module_cache__'), 'module cache should be redirected');
+  const cache = {};
+  runInNewContext(code, {
+    __webpack_module_cache__: cache,
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    TextDecoder,
+    AbortController,
+  });
+  t.true(Object.keys(cache).length > 0);
 });
-
-/**
- * A webpack plugin that changes the module-cache declaration before Temporal's
- * render-time patch runs. This simulates webpack emitting `__webpack_module_cache__={}`
- * instead of `__webpack_module_cache__ = {}`.
- */
-class ModuleCacheRenderWhitespaceCollapsePlugin {
-  apply(compiler: any): void {
-    compiler.hooks.compilation.tap('ModuleCacheRenderWhitespaceCollapse', (compilation: any) => {
-      const hooks = compiler.webpack.javascript.JavascriptModulesPlugin.getCompilationHooks(compilation);
-
-      hooks.renderMain.tap('ModuleCacheRenderWhitespaceCollapse', (source: any) => {
-        const code = source.source().toString();
-        const replaced = new compiler.webpack.sources.ReplaceSource(source);
-        const re = /((?:var|let|const)\s+__webpack_module_cache__)\s*=\s*\{\}/g;
-        for (let match = re.exec(code); match !== null; match = re.exec(code)) {
-          replaced.replace(match.index, match.index + match[0].length - 1, `${match[1]}={}`);
-        }
-        return replaced;
-      });
-    });
-  }
-}

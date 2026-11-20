@@ -1,6 +1,6 @@
 import { createInstrumenter } from 'istanbul-lib-instrument';
 import * as convert from 'convert-source-map';
-import type { LoaderDefinitionFunction } from 'webpack';
+import type { LoaderDefinitionFunction } from '@rspack/core' with { 'resolution-mode': 'import' };
 
 const instrumentWithIstanbulLoader: LoaderDefinitionFunction = function (source, sourceMap): void {
   let srcMap = sourceMap ?? convert.fromSource(source)?.sourcemap;

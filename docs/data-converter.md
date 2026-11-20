@@ -69,7 +69,7 @@ for that protocol.
 `PayloadCodec` only runs in the main thread.
 
 When `WorkerOptions.dataConverter.payloadConverterPath` (or `failureConverterPath`) is provided, the code at that
-location is loaded into the main thread and the webpack Workflow bundle.
+location is loaded into the main thread and the Workflow bundle.
 
 `Worker.create`:
 _main thread_

@@ -1,6 +1,6 @@
 import * as os from 'node:os';
 import * as v8 from 'node:v8';
-import type { Configuration as WebpackConfiguration } from 'webpack';
+import type { Configuration as RspackConfiguration } from '@rspack/core' with { 'resolution-mode': 'import' };
 import type * as nexus from 'nexus-rpc';
 import type {
   ActivityFunction,
@@ -652,10 +652,10 @@ export interface WorkerOptions {
 
   bundlerOptions?: {
     /**
-     * Before Workflow code is bundled with Webpack, `webpackConfigHook` is called with the Webpack
-     * {@link https://webpack.js.org/configuration/ | configuration} object so you can modify it.
+     * Before Workflow code is bundled, `webpackConfigHook` is called with the Rspack
+     * {@link https://rspack.rs/config/ | configuration} object so you can modify it.
      */
-    webpackConfigHook?: (config: WebpackConfiguration) => WebpackConfiguration;
+    webpackConfigHook?: (config: RspackConfiguration) => RspackConfiguration;
 
     /**
      * List of modules to be excluded from the Workflows bundle.
@@ -813,7 +813,7 @@ export type PatchActivationCallback = (input: PatchActivationInput) => boolean;
 
 // Workflow Bundle /////////////////////////////////////////////////////////////////////////////////
 
-export type { WebpackConfiguration };
+export type { RspackConfiguration, RspackConfiguration as WebpackConfiguration };
 
 export interface WorkflowBundlePath {
   codePath: string;

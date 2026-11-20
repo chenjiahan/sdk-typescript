@@ -1,3 +1,4 @@
+import type { Compiler } from '@rspack/core' with { 'resolution-mode': 'import' };
 import type { TestFn } from 'ava';
 import anyTest from 'ava';
 import type { temporal } from '@temporalio/proto';
@@ -52,7 +53,7 @@ test.serial('Replay keeps its runtime alive while another replay finishes during
           webpackConfigHook(config) {
             config.plugins ??= [];
             config.plugins.push({
-              apply(compiler) {
+              apply(compiler: Compiler) {
                 compiler.hooks.beforeCompile.tapPromise('pause-replay-bundling', async () => {
                   bundlingStarted();
                   await resume;

@@ -17,7 +17,8 @@ function modulesLoadedBy(expression: string): string[] {
 }
 
 const isBundlerModule = (filename: string) =>
-  /[\\/]node_modules[\\/]webpack[\\/]/.test(filename) || /[\\/]workflow[\\/]bundler\.js$/.test(filename);
+  /[\\/]node_modules[\\/]@rspack[\\/](?:core|binding)[\\/]/.test(filename) ||
+  /[\\/]workflow[\\/]bundler\.js$/.test(filename);
 
 test('Importing @temporalio/worker does not load the Workflow bundler', (t) => {
   const loaded = modulesLoadedBy(`require('@temporalio/worker')`);

@@ -20,7 +20,7 @@ export const handler = runWorker({ deploymentName: 'my-service', buildId: 'v1.0'
 ```
 
 Prefer `workflowBundle` (pre-bundled with `bundleWorkflowCode`) over `workflowsPath` to avoid
-webpack bundling overhead on Lambda cold starts.
+Workflow bundling overhead on Lambda cold starts.
 
 ## Configuration
 

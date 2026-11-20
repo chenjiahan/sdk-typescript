@@ -3,8 +3,8 @@ import * as libCoverage from 'istanbul-lib-coverage';
 import type { InjectedSinks, BundleOptions, WorkerOptions } from '@temporalio/worker';
 import type { CoverageSinks } from './sinks';
 
-// Pull `webpack.Configuration` type without needing to import Webpack
-type WebpackConfigType = ReturnType<NonNullable<BundleOptions['webpackConfigHook']>>;
+// Use the same configuration type as the Worker.
+type BundlerConfig = ReturnType<NonNullable<BundleOptions['webpackConfigHook']>>;
 
 export class WorkflowCoverage {
   coverageMapsData: libCoverage.CoverageMapData[] = [];
@@ -17,7 +17,7 @@ export class WorkflowCoverage {
 
   /**
    * Add all necessary coverage-specific logic to Worker config:
-   * interceptors, sinks, and Webpack config hook.
+   * interceptors, sinks, and bundler config hook.
    */
   augmentWorkerOptions(
     workerOptions: WorkerOptions & { workflowsPath: NonNullable<WorkerOptions['workflowsPath']> }
@@ -42,7 +42,7 @@ export class WorkflowCoverage {
       },
       bundlerOptions: {
         ...workerOptions.bundlerOptions,
-        webpackConfigHook: (config: WebpackConfigType) => {
+        webpackConfigHook: (config: BundlerConfig) => {
           config = this.addInstrumenterRule(config);
 
           const existingWebpackConfigHook = workerOptions?.bundlerOptions?.webpackConfigHook;
@@ -58,7 +58,7 @@ export class WorkflowCoverage {
 
   /**
    * Add all necessary coverage-specific logic to bundle config:
-   * interceptors and Webpack config hook.
+   * interceptors and bundler config hook.
    * The end user is still responsible for adding sinks to the worker options!
    */
   augmentBundleOptions(
@@ -75,7 +75,7 @@ export class WorkflowCoverage {
     return {
       ...bundleOptions,
       workflowInterceptorModules: [...(bundleOptions.workflowInterceptorModules || []), this.interceptorModule],
-      webpackConfigHook: (config: WebpackConfigType) => {
+      webpackConfigHook: (config: BundlerConfig) => {
         config = this.addInstrumenterRule(config);
 
         const existingWebpackConfigHook = bundleOptions.webpackConfigHook;
@@ -140,7 +140,7 @@ export class WorkflowCoverage {
   /**
    * Modify the given Worker config to auto instrument Workflows
    */
-  addInstrumenterRule(config: WebpackConfigType): WebpackConfigType {
+  addInstrumenterRule(config: BundlerConfig): BundlerConfig {
     if (!this.hasCoverageGlobal()) {
       return config;
     }

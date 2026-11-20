@@ -1,11 +1,10 @@
-import * as realFS from 'node:fs';
+import { statSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 import util from 'node:util';
-import * as unionfs from 'unionfs';
 import * as memfs from 'memfs';
-import type { Configuration } from 'webpack';
-import { webpack, BannerPlugin, Compilation, NormalModuleReplacementPlugin } from 'webpack';
+import type { Configuration } from '@rspack/core' with { 'resolution-mode': 'import' };
+import { rspack, BannerPlugin, Compilation, NormalModuleReplacementPlugin } from '@rspack/core';
 import type { Logger } from '../logger';
 import { DefaultLogger, hasColorSupport } from '../logger';
 import pkg from '../pkg';
@@ -46,14 +45,12 @@ export interface WorkflowBundleWithSourceMap {
 }
 
 /**
- * Builds a V8 Isolate by bundling provided Workflows using webpack.
+ * Builds a V8 Isolate by bundling provided Workflows using Rspack.
  *
  * @param workflowsPath all Workflows found in path will be put in the bundle
  * @param workflowInterceptorModules list of interceptor modules to register on Workflow creation
  */
 export class WorkflowCodeBundler {
-  private foundProblematicModules = new Set<string>();
-
   public readonly logger: Logger;
   public readonly workflowsPath: string;
   public readonly workflowInterceptorModules: string[];
@@ -104,54 +101,22 @@ export class WorkflowCodeBundler {
    * @return a {@link WorkflowBundle} containing bundled code, including inlined source map
    */
   public async createBundle(): Promise<WorkflowBundleWithSourceMap> {
-    const vol = new memfs.Volume();
-    const ufs = new unionfs.Union();
-
-    /**
-     * readdir and exclude sourcemaps and d.ts files
-     */
-    function readdir(...args: Parameters<typeof realFS.readdir>) {
-      // Help TS a bit because readdir has multiple signatures
-      const callback: (err: NodeJS.ErrnoException | null, files: string[]) => void = args.pop() as any;
-      const newArgs: Parameters<typeof realFS.readdir> = [
-        ...args,
-        (err: Error | null, files: string[]) => {
-          if (err !== null) {
-            callback(err, []);
-            return;
-          }
-          callback(
-            null,
-            files.filter((f) => /\.[jt]s$/.test(path.extname(f)) && !f.endsWith('.d.ts'))
-          );
-        },
-      ] as any;
-      return realFS.readdir(...newArgs);
-    }
-
-    // Cast because the type definitions are inaccurate
-    const memoryFs = memfs.createFsFromVolume(vol);
-    ufs.use(memoryFs as any).use({ ...realFS, readdir: readdir as any });
-    const distDir = '/dist';
-    const entrypointPath = this.makeEntrypointPath(ufs, this.workflowsPath);
-
-    this.genEntrypoint(vol, entrypointPath);
-    const bundleFilePath = await this.bundle(ufs, memoryFs, entrypointPath, distDir);
-
-    const code = memoryFs.readFileSync(bundleFilePath, 'utf8') as string;
+    const outputFs = memfs.createFsFromVolume(new memfs.Volume());
+    const entry = this.makeEntrypointPath(this.workflowsPath);
+    const bundleFilePath = await this.bundle(outputFs, entry, '/dist');
+    const code = outputFs.readFileSync(bundleFilePath, 'utf8') as string;
     assertWorkflowModuleCacheGlobalApplied(code);
 
     this.logger.info('Workflow bundle created', { size: `${toMB(code.length)}MB` });
 
-    // Cast because the type definitions are inaccurate
     return {
       sourceMap: 'deprecated: this is no longer in use\n',
       code,
     };
   }
 
-  protected makeEntrypointPath(fs: typeof unionfs.ufs, workflowsPath: string): string {
-    const stat = fs.statSync(workflowsPath);
+  protected makeEntrypointPath(workflowsPath: string): string {
+    const stat = statSync(workflowsPath);
     if (stat.isFile()) {
       // workflowsPath is a file; make the entrypoint a sibling of that file
       const { root, dir, name } = path.parse(workflowsPath);
@@ -164,11 +129,11 @@ export class WorkflowCodeBundler {
   }
 
   /**
-   * Creates the main entrypoint for the generated webpack library.
+   * Creates the main entrypoint for the generated Workflow library.
    *
    * Exports all detected Workflow implementations and some workflow libraries to be used by the Worker.
    */
-  protected genEntrypoint(vol: typeof memfs.vol, target: string): void {
+  protected genEntrypoint(): string {
     const interceptorImports = [...new Set(this.workflowInterceptorModules)]
       .map((v) => `require(/* webpackMode: "eager" */ ${JSON.stringify(v)})`)
       .join(', \n');
@@ -176,7 +141,7 @@ export class WorkflowCodeBundler {
       .map((v) => `  require(/* webpackMode: "eager" */ ${JSON.stringify(v)});`)
       .join('\n');
 
-    const code = `
+    return `
 const api = require('@temporalio/workflow/internal/worker-interface');
 exports.api = api;
 
@@ -197,23 +162,13 @@ exports.importInterceptors = function importInterceptors() {
   ];
 }
 `;
-    try {
-      vol.mkdirSync(path.dirname(target), { recursive: true });
-    } catch (err: any) {
-      if (err.code !== 'EEXIST') throw err;
-    }
-    vol.writeFileSync(target, code);
   }
 
   /**
-   * Run webpack
+   * Run Rspack
    */
-  protected async bundle(
-    inputFilesystem: typeof unionfs.ufs,
-    outputFilesystem: memfs.IFs,
-    entry: string,
-    distDir: string
-  ): Promise<string> {
+  protected async bundle(outputFilesystem: memfs.IFs, entry: string, distDir: string): Promise<string> {
+    const foundProblematicModules = new Set<string>();
     const captureProblematicModules: Configuration['externals'] = async (data, _callback): Promise<undefined> => {
       // Ignore the "node:" prefix if any.
       const module: string = data.request?.startsWith('node:')
@@ -221,15 +176,17 @@ exports.importInterceptors = function importInterceptors() {
         : (data.request ?? '');
 
       if (moduleMatches(module, disallowedModules) && !moduleMatches(module, this.ignoreModules)) {
-        this.foundProblematicModules.add(module);
+        foundProblematicModules.add(module);
       }
 
       return undefined;
     };
 
     const options: Configuration = {
+      // The Workflow cache runtime module requires the webpack-compatible bootstrap.
+      experiments: { runtimeMode: 'webpack', useInputFileSystem: [/.*/] },
       resolve: {
-        // https://webpack.js.org/configuration/resolve/#resolvemodules
+        // https://rspack.rs/config/resolve#resolvemodules
         modules: [path.resolve(__dirname, 'module-overrides'), 'node_modules'],
         extensions: ['.ts', '.js'],
         extensionAlias: { '.js': ['.ts', '.js'] },
@@ -240,6 +197,7 @@ exports.importInterceptors = function importInterceptors() {
         },
       },
       plugins: [
+        new rspack.experiments.VirtualModulesPlugin({ [entry]: this.genEntrypoint() }),
         new BannerPlugin({
           banner: makeWorkflowBundleVersionAnnotation(pkg.version),
           raw: true,
@@ -248,7 +206,7 @@ exports.importInterceptors = function importInterceptors() {
           // the inline source map is generated so its line offsets remain correct.
           stage: Compilation.PROCESS_ASSETS_STAGE_DEV_TOOLING - 1,
         }),
-        // Redirect webpack's module cache to a runtime-injected global so that a single V8
+        // Redirect the bundler's module cache to a runtime-injected global so that a single V8
         // context can be reused across Workflow executions while keeping module state isolated.
         new InjectWorkflowModuleCacheGlobalPlugin(),
         // The OpenTelemetry interceptor packages only require `@temporalio/workflow` for interceptors that run in workflow context.
@@ -266,7 +224,7 @@ exports.importInterceptors = function importInterceptors() {
         parser: {
           javascript: {
             // protobufjs probes for optional filesystem support with
-            // `require(/* webpackIgnore: true */ 'fs')`. Webpack only honours that hint on
+            // `require(/* webpackIgnore: true */ 'fs')`. Rspack honors that hint on
             // CommonJS requires when `commonjsMagicComments` is enabled; without it the probe
             // looks like a real `fs` dependency and trips the disallowed modules check.
             commonjsMagicComments: true,
@@ -275,16 +233,15 @@ exports.importInterceptors = function importInterceptors() {
         rules: [
           {
             test: /\.js$/,
-            enforce: 'pre',
-            use: [require.resolve('source-map-loader')],
+            extractSourceMap: true,
           },
           {
             test: /\.ts$/,
             exclude: /node_modules/,
             use: {
-              loader: require.resolve('swc-loader'),
+              loader: 'builtin:swc-loader',
               options: {
-                sourceMap: true,
+                sourceMaps: true,
                 jsc: {
                   target: 'es2017',
                   parser: {
@@ -303,66 +260,66 @@ exports.importInterceptors = function importInterceptors() {
       output: {
         path: distDir,
         filename: 'workflow-bundle-[fullhash].js',
-        devtoolModuleFilenameTemplate: '[absolute-resource-path]',
+        // Stack frames and embedded sources must use the same path for enhanced stack trace queries.
+        devtoolModuleFilenameTemplate: ({ absoluteResourcePath }) =>
+          path.isAbsolute(absoluteResourcePath) ? path.normalize(absoluteResourcePath) : absoluteResourcePath,
         library: '__TEMPORAL__',
       },
       ignoreWarnings: [/Failed to parse source map/],
     };
 
-    const compiler = webpack(this.webpackConfigHook(options));
+    const compiler = rspack(this.webpackConfigHook(options));
 
-    // Cast to any because the type declarations are inaccurate
-    compiler.inputFileSystem = inputFilesystem as any;
-    // Don't use ufs due to a strange bug on Windows:
-    // https://github.com/temporalio/sdk-typescript/pull/554
+    // Context imports enumerate the directory. Keep source maps, declarations and
+    // other non-Workflow files out of that list, including extensionless requests.
+    const inputFs = compiler.inputFileSystem!;
+    const readdir = inputFs.readdir.bind(inputFs);
+    inputFs.readdir = (dir, optionsOrCallback, callback?) => {
+      if (typeof optionsOrCallback === 'function') {
+        readdir(dir, (err, files) =>
+          optionsOrCallback(
+            err,
+            files?.filter((file) => /\.[jt]s$/.test(file) && !file.endsWith('.d.ts'))
+          )
+        );
+      } else {
+        // Rspack enumerates contexts without options. Forward other forms used by loaders.
+        Reflect.apply(readdir, undefined, [dir, optionsOrCallback, callback]);
+      }
+    };
     compiler.outputFileSystem = outputFilesystem as any;
 
     try {
-      return await new Promise<string>((resolve, reject) => {
-        compiler.run((err, stats) => {
-          if (stats !== undefined) {
-            const hasError = stats.hasErrors();
-            // To debug webpack build:
-            // const lines = stats.toString({ preset: 'verbose' }).split('\n');
-            const webpackOutput = stats.toString({
-              chunks: false,
-              colors: hasColorSupport(this.logger),
-              errorDetails: true,
-            });
-            this.logger[hasError ? 'error' : 'info'](webpackOutput);
-            if (hasError) {
-              reject(
-                new Error(
-                  "Webpack finished with errors, if you're unsure what went wrong, visit our troubleshooting page at https://docs.temporal.io/develop/typescript/debugging#webpack-errors"
-                )
-              );
-            }
+      const stats = await util.promisify(compiler.run.bind(compiler))();
+      if (!stats) throw new Error('Rspack did not return compilation stats.');
+      const hasErrors = stats.hasErrors();
+      this.logger[hasErrors ? 'error' : 'info'](
+        stats.toString({ chunks: false, colors: hasColorSupport(this.logger), errorDetails: true })
+      );
+      if (hasErrors) {
+        throw new Error(
+          "Rspack finished with errors, if you're unsure what went wrong, visit our troubleshooting page at https://docs.temporal.io/develop/typescript/debugging#webpack-errors"
+        );
+      }
+      if (foundProblematicModules.size) {
+        throw new Error(
+          `Your Workflow code (or a library used by your Workflow code) is importing the following disallowed modules:\n` +
+            Array.from(foundProblematicModules)
+              .map((module) => `  - '${module}'\n`)
+              .join('') +
+            `These modules can't be used in workflow context as they might break determinism.` +
+            `HINT: Consider the following options:\n` +
+            ` • Make sure that activity code is not imported from workflow code. Use \`import type\` to import activity function signatures.\n` +
+            ` • Move code that has non-deterministic behaviour to activities.\n` +
+            ` • If you know for sure that a disallowed module will not be used at runtime, add its name to 'WorkerOptions.bundlerOptions.ignoreModules' in order to dismiss this warning.\n` +
+            `See also: https://typescript.temporal.io/api/namespaces/worker#workflowbundleoption and https://docs.temporal.io/typescript/determinism.`
+        );
+      }
 
-            if (this.foundProblematicModules.size) {
-              const err = new Error(
-                `Your Workflow code (or a library used by your Workflow code) is importing the following disallowed modules:\n` +
-                  Array.from(this.foundProblematicModules)
-                    .map((module) => `  - '${module}'\n`)
-                    .join('') +
-                  `These modules can't be used in workflow context as they might break determinism.` +
-                  `HINT: Consider the following options:\n` +
-                  ` • Make sure that activity code is not imported from workflow code. Use \`import type\` to import activity function signatures.\n` +
-                  ` • Move code that has non-deterministic behaviour to activities.\n` +
-                  ` • If you know for sure that a disallowed module will not be used at runtime, add its name to 'WorkerOptions.bundlerOptions.ignoreModules' in order to dismiss this warning.\n` +
-                  `See also: https://typescript.temporal.io/api/namespaces/worker#workflowbundleoption and https://docs.temporal.io/typescript/determinism.`
-              );
-
-              reject(err);
-            }
-
-            const outputFilename = Object.keys(stats.compilation.assets)[0];
-            if (!err) {
-              resolve(path.join(distDir, outputFilename!));
-            }
-          }
-          reject(err);
-        });
-      });
+      const [entrypoint] = stats.compilation.entrypoints.values();
+      const [outputFilename] = entrypoint?.getEntrypointChunk().files ?? [];
+      if (!outputFilename) throw new Error('The Workflow entrypoint did not emit a JavaScript bundle.');
+      return path.join(compiler.outputPath, outputFilename);
     } finally {
       await util.promisify(compiler.close).bind(compiler)();
     }
@@ -392,7 +349,7 @@ export interface BundlerPlugin {
 }
 
 /**
- * Options for bundling Workflow code using Webpack
+ * Options for bundling Workflow code using Rspack
  */
 export interface BundleOptions {
   /**
@@ -406,7 +363,7 @@ export interface BundleOptions {
    */
   workflowInterceptorModules?: string[];
   /**
-   * Optional logger for logging Webpack output
+   * Optional logger for logging Rspack output
    */
   logger?: Logger;
   /**
@@ -443,8 +400,8 @@ export interface BundleOptions {
   preloadModules?: string[];
 
   /**
-   * Before Workflow code is bundled with Webpack, `webpackConfigHook` is called with the Webpack
-   * {@link https://webpack.js.org/configuration/ | configuration} object so you can modify it.
+   * Before Workflow code is bundled, `webpackConfigHook` is called with the Rspack
+   * {@link https://rspack.rs/config/ | configuration} object so you can modify it.
    */
   webpackConfigHook?: (config: Configuration) => Configuration;
 

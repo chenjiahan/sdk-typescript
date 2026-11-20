@@ -34,6 +34,7 @@
     "istanbul-lib-instrument": "^6.0.1"
   },
   "devDependencies": {
+    "@rspack/core": "^2.3.1",
     "@temporalio/common": "workspace:*",
     "@temporalio/worker": "workspace:*",
     "@temporalio/workflow": "workspace:*",
@@ -41,15 +42,13 @@
     "@types/istanbul-lib-coverage": "^2.0.6",
     "@types/istanbul-lib-instrument": "^1.7.7",
     "ts-loader": "^10.0.0-beta.0",
-    "typescript": "^7.1.0-beta",
-    "webpack": "^5.108.4"
+    "typescript": "^7.1.0-beta"
   },
   "peerDependencies": {
     "@temporalio/common": "workspace:*",
     "@temporalio/worker": "workspace:*",
     "@temporalio/workflow": "workspace:*",
-    "ts-loader": "^9.0.0 || ^10.0.0-beta.0",
-    "webpack": "^5.106.2"
+    "ts-loader": "^9.0.0 || ^10.0.0-beta.0"
   },
   "peerDependenciesMeta": {
     "ts-loader": {
